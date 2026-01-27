@@ -468,21 +468,23 @@ template <typename Fn> struct InlineHook : HookInvocation<Fn> {
             // 复制原始指令到 trampoline
             std::memcpy(&this->trampoline[offset], &src[offset], instruction.length);
             std::memcpy(&backup_prologue[offset], &src[offset], instruction.length);
-            // 处理指令中的相对位移
+            // 处理指令中的相对位移,处理重定位 (Relative Addressing)
             if (instruction.attributes & ZYDIS_ATTRIB_IS_RELATIVE) {
                 for (ZyanU8 i = 0; i < instruction.operand_count_visible; ++i) {
                     const ZydisDecodedOperand *op = &operands[i];
 
                     // 情况1:相对立即数（jmp rel32, call rel32, jcc rel8/rel32 等）
                     if (op->type == ZYDIS_OPERAND_TYPE_IMMEDIATE && op->imm.is_relative) {
-                        ZyanI64 original_disp = op->imm.value.s;
 
                         // 位移的原始大小（8/32 bit）
                         ZyanU8 size_in_bytes = op->size / 8; // bits -> bytes
 
                         // 检查新位移是否超过指令对应的范围
-                        intptr_t absolute_target = reinterpret_cast<intptr_t>(src + instruction.length) + original_disp;
-                        intptr_t new_disp = absolute_target - reinterpret_cast<intptr_t>(this->trampoline);
+                        intptr_t absolute_target =
+                            reinterpret_cast<intptr_t>(src + offset + instruction.length) + op->imm.value.s;
+                        intptr_t trampoline_rip_next =
+                            reinterpret_cast<intptr_t>(this->trampoline + offset + instruction.length);
+                        intptr_t new_disp = absolute_target - trampoline_rip_next;
 
                         // 检查能否用 size_in_bytes 表示
                         bool fits = false;
