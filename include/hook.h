@@ -20,6 +20,11 @@
 #    define LOG_ERROR(fmt, ...)
 #endif
 
+#if defined(_MSC_VER)
+#    pragma warning(push)
+#    pragma warning(disable : 4141)
+#endif
+
 #ifndef NOINLINE
 #    if defined(_MSC_VER)
 #        define NOINLINE __declspec(noinline)
@@ -199,14 +204,36 @@ inline auto WriteProtectedMemory(void *address, const void *data, size_t size) -
     return true;
 #endif
 }
+
+INLINE inline bool TryEnterReentrantSection(std::uint32_t *reentrant) {
+    return 0 == _InterlockedCompareExchange(reentrant, 1, 0);
+}
+
+INLINE inline void LeaveReentrantSection(std::uint32_t *reentrant) {
+    auto old_val = _InterlockedExchange(reentrant, 0);
+    _Analysis_assume_(old_val == 1);
+}
+struct ReentrantGuard {
+    bool entered;
+    std::uint32_t *reentrant;
+
+    INLINE ReentrantGuard(std::uint32_t *reentrant)
+        : reentrant(reentrant), entered(TryEnterReentrantSection(reentrant)) {}
+
+    INLINE ~ReentrantGuard() {
+        if (entered)
+            LeaveReentrantSection(reentrant);
+    }
+
+    explicit operator bool() const { return entered; }
+};
 enum HookType {
     EnterHook,
     ExitHook,
     ReplaceHook,
 };
 struct HookContext {
-    // std::array<std::atomic<bool>, 32> tl_reentrant; // 支持最多32个线程的重入保护
-    std::atomic<bool> tl_reentrant;
+    alignas(4) std::uint32_t reentrant;
     std::uint8_t *target_fn{nullptr}; // 原函数地址
     std::uint8_t *detour_fn{nullptr}; // 用户传入的 hook 回调函数
     std::uint8_t *trampoline{nullptr};
@@ -220,43 +247,41 @@ template <typename R, typename... Args> struct HookInvocation<R (*)(Args...)> : 
     using ReturnType = std::conditional_t<std::is_same_v<R, void>, int, R>;
     using FnType = R (*)(Args...);
 
-    NOINLINE static ReturnType InvocationEntry(Args... args) {
+    INLINE static auto Self() {
 #ifdef _WIN32
-        HookInvocation *Self =
+        HookInvocation *self =
             reinterpret_cast<HookInvocation *>(reinterpret_cast<_NT_TIB *>(NtCurrentTeb())->ArbitraryUserPointer);
-        return Self->Dispatch(std::forward<Args>(args)...);
+        return self;
 #else
         uint64_t value{0};
         __asm__ __volatile__("movq %%fs:-0x20, %0" : "=r"(value) : : "memory");
-        HookInvocation *Self = std::bit_cast<HookInvocation *>(value);
-        return Self->Dispatch(std::forward<Args>(args)...);
+        HookInvocation *self = std::bit_cast<HookInvocation *>(value);
+        return self;
 #endif
     }
-    // 根据 hook_type 分发调用
+    NOINLINE static ReturnType InvocationEntry(Args... args) { return Self()->Dispatch(std::forward<Args>(args)...); }
     inline ReturnType Dispatch(Args... args) {
         ReturnType original_result, new_result;
         bool was_free = false;
 
-        if (tl_reentrant.compare_exchange_strong(was_free, true, std::memory_order_acq_rel,
-                                                 std::memory_order_relaxed)) {
-
-            if (hook_type == EnterHook) {
-                new_result = InvokeDetour(std::forward<Args>(args)...);
-                original_result = InvokeTarget(std::forward<Args>(args)...);
-            } else if (hook_type == ExitHook) {
-                original_result = InvokeTarget(std::forward<Args>(args)...);
-                new_result = InvokeDetour(std::forward<Args>(args)...);
-            } else if (hook_type == ReplaceHook) {
-                original_result = new_result = InvokeDetour(std::forward<Args>(args)...);
-            }
-
-            ReturnType result = use_original_result ? original_result : new_result;
-            tl_reentrant.store(false, std::memory_order_release); // 放回去
-            return result;
-        } else {
+        ReentrantGuard guard(&this->reentrant);
+        if (!guard) {
             original_result = new_result = InvokeTarget(std::forward<Args>(args)...);
             return original_result;
         }
+
+        if (hook_type == EnterHook) {
+            new_result = InvokeDetour(std::forward<Args>(args)...);
+            original_result = InvokeTarget(std::forward<Args>(args)...);
+        } else if (hook_type == ExitHook) {
+            original_result = InvokeTarget(std::forward<Args>(args)...);
+            new_result = InvokeDetour(std::forward<Args>(args)...);
+        } else if (hook_type == ReplaceHook) {
+            original_result = new_result = InvokeDetour(std::forward<Args>(args)...);
+        }
+
+        ReturnType result = use_original_result ? original_result : new_result;
+        return result;
     }
     inline ReturnType InvokeTarget(Args... args) {
         auto fn = reinterpret_cast<FnType>(trampoline);
@@ -280,9 +305,7 @@ template <typename R, typename... Args> struct HookInvocation<R (*)(Args...)> : 
 template <typename Fn> struct InlineHook : HookInvocation<Fn> {
     using FnType = typename HookInvocation<Fn>::FnType;
 
-    constexpr InlineHook() {
-        this->tl_reentrant.store(false, std::memory_order_relaxed); // 原子存储 false
-    }
+    constexpr InlineHook() {}
 
     auto BuildJumpToInvocationPrologue() {
 #if 0
@@ -566,10 +589,9 @@ template <typename Fn> struct InlineHook : HookInvocation<Fn> {
  */
 template <typename Fn> [[nodiscard]] INLINE inline InlineHook<Fn> *MakeInlineHook() {
     auto *instance = new (std::nothrow) InlineHook<Fn>();
-
-    // if (instance) {
-    //     instance > tl_reentrant.store(false, std::memory_order_relaxed);
-    // }
-
     return instance;
 }
+
+#if defined(_MSC_VER)
+#    pragma warning(pop)
+#endif
