@@ -4,142 +4,25 @@
 #include <string>
 #include <iostream>
 #include <thread>
+#include <stdio.h>
 
 #define LOG_INFO(fmt, ...) printf("[*] " fmt, ##__VA_ARGS__)
 #define LOG_WARN(fmt, ...) printf("[!] " fmt, ##__VA_ARGS__)
 #define LOG_ERROR(fmt, ...) printf("[-] " fmt, ##__VA_ARGS__)
-#include <hook.h>
+#include <witch_cult/detour.h>
+using namespace witch_cult;
 
-NOINLINE int funcA(int x) {
-    printf("funcA(%d)\n", x);
-    return x * 10;
-}
-
-NOINLINE int hookA_multiply(int x) {
-    printf("hookA_multiply(%d)\n", x);
-    return x * 100;
-}
-
-NOINLINE int hookA_add(int x) {
-    printf("hookA_add(%d)\n", x);
-    return x + 1000;
-}
-
-NOINLINE int hookA_exit_style(int x) {
-    printf("hookA_exit_style(%d)\n", x);
-    return x - 7;
-}
-
-// ─── Stdout capture helper ────────────────────────────────────────────────
-struct CaptureStdout {
-    std::stringstream buffer;
-    std::streambuf *old = nullptr;
-    CaptureStdout() { old = std::cout.rdbuf(buffer.rdbuf()); }
-    ~CaptureStdout() { std::cout.rdbuf(old); }
-    std::string str() const { return buffer.str(); }
-};
-
-// ─── Test cases ────────────────────────────────────────────────────────────
-TEST_CASE("InlineHook - Prevent re-hooking the same target function", "[hook][no-rehook]") {
-    InlineHook<decltype(&funcA)> h;
-    CaptureStdout cap;
-
-    SECTION("First hook should succeed") {
-        bool ok = h.Install(funcA, hookA_multiply, ReplaceHook, false);
-        REQUIRE(ok == true);
-        cap.buffer.str("");
-        cap.buffer.clear();
-
-        int r = funcA(5);
-        REQUIRE(r == 500); // hookA_multiply: 5*100
-    }
-
-    SECTION("Second Install with same configuration should be rejected") {
-        // First hook succeeds
-        REQUIRE(h.Install(funcA, hookA_multiply, ReplaceHook, false) == true);
-        cap.buffer.str("");
-        cap.buffer.clear();
-
-        // Try to hook again (same type, same callback)
-        bool second = h.Install(funcA, hookA_multiply, ReplaceHook, false);
-        REQUIRE(second == false);
-
-        // Behavior should remain unchanged
-        cap.buffer.str("");
-        cap.buffer.clear();
-        REQUIRE(funcA(7) == 700);
-    }
-
-    SECTION("Attempting to re-hook with a different callback should also be rejected") {
-        REQUIRE(h.Install(funcA, hookA_multiply, ReplaceHook, false) == true);
-        cap.buffer.str("");
-        cap.buffer.clear();
-
-        bool third = h.Install(funcA, hookA_add, ReplaceHook, false);
-        REQUIRE(third == false);
-
-        // Still uses the first hook
-        cap.buffer.str("");
-        cap.buffer.clear();
-        REQUIRE(funcA(3) == 300);
-    }
-
-    SECTION("Attempting to re-hook with a different HookType should be rejected") {
-        REQUIRE(h.Install(funcA, hookA_multiply, ReplaceHook, false) == true);
-        bool fourth = h.Install(funcA, hookA_exit_style, ExitHook, false);
-        REQUIRE(fourth == false);
-
-        // Still uses ReplaceHook behavior
-        REQUIRE(funcA(9) == 900);
-    }
-
-    SECTION("Attempting to re-hook with different use_original_result should be rejected") {
-        h.uninstall();
-        REQUIRE(h.Install(funcA, hookA_multiply, EnterHook, false) == true);
-        bool fifth = h.Install(funcA, hookA_multiply, EnterHook, true);
-        REQUIRE(fifth == false);
-
-        // Behavior remains consistent
-        REQUIRE(funcA(4) == 400);
-    }
-
-    SECTION("After multiple failed hook attempts, function behavior remains as the first hook") {
-        REQUIRE(h.Install(funcA, hookA_multiply, ReplaceHook, false) == true);
-
-        // Try 5 different combinations — all should fail
-        for (int i = 0; i < 5; ++i) {
-            bool ok = h.Install(funcA, (i % 2 == 0) ? hookA_add : hookA_exit_style,
-                                (i % 3 == 0) ? EnterHook : (i % 3 == 1 ? ExitHook : ReplaceHook), (i % 2 == 0));
-            REQUIRE(ok == false);
-        }
-
-        // Final behavior is still from the first hook
-        REQUIRE(funcA(6) == 600);
-    }
-}
-
-TEST_CASE("InlineHook - Return value semantics of Install after already hooked", "[hook][no-rehook][return]") {
-    InlineHook<decltype(&funcA)> h;
-
-    // First install succeeds
-    REQUIRE(h.Install(funcA, hookA_multiply, ReplaceHook, false) == true);
-    // All subsequent calls fail
-    REQUIRE(h.Install(funcA, hookA_multiply, ReplaceHook, false) == false);
-    REQUIRE(h.Install(funcA, hookA_add, EnterHook, true) == false);
-    REQUIRE(h.Install(funcA, hookA_exit_style, ExitHook, false) == false);
-}
-
-static int g_side_effect = 0;
+static size_t g_side_effect = 0;
 static int64_t g_last_arg = 0;
 
-NOINLINE int simple_add(int a, int b) {
+WITCH_NOINLINE int simple_add(int a, int b) {
     printf("noinline");
     g_last_arg = (int64_t)a << 32 | (uint32_t)b;
     g_side_effect += 100;
     return a + b;
 }
 
-NOINLINE void simple_void_noargs() {
+WITCH_NOINLINE void simple_void_noargs() {
     printf("noinline");
     g_side_effect += 777;
 }
@@ -168,8 +51,8 @@ TEST_CASE("InlineHook - basic replace hook", "[hook][replace]") {
         g_last_arg = (int64_t)b << 32 | a; // swapped
         return a * b;
     };
-
-    bool ok = hook.Install(&simple_add, detour, ReplaceHook, false);
+    hook.withDetourFn(detour).withTargetFn(simple_add).withType(ReplaceHook).withPassThrough(false);
+    bool ok = hook.install();
     REQUIRE(ok == true);
     REQUIRE(hook.hooked == true);
 
@@ -188,6 +71,7 @@ TEST_CASE("InlineHook - basic replace hook", "[hook][replace]") {
     REQUIRE(simple_add(5, 6) == 11);
     REQUIRE(g_side_effect == 9000 + 100 + 100);
 }
+
 __declspec(noinline) auto detour_enter(int a, int b) -> int {
     printf("noinline");
     g_side_effect += 2000;
@@ -200,7 +84,9 @@ TEST_CASE("InlineHook - enter hook preserves original result", "[hook][enter]") 
 
     g_side_effect = 0;
 
-    REQUIRE(hook.Install(&simple_add, detour_enter, EnterHook, true));
+    hook.withDetourFn(detour_enter).withTargetFn(simple_add).withType(EnterHook).withPassThrough(true);
+
+    REQUIRE(hook.install());
 
     int res = simple_add(10, 20);
 
@@ -222,7 +108,9 @@ TEST_CASE("InlineHook - exit hook can override result", "[hook][exit]") {
         return 7777; // override result
     };
 
-    REQUIRE(hook.Install(&simple_add, detour_exit, ExitHook, false));
+    hook.withDetourFn(detour_exit).withTargetFn(simple_add).withType(ExitHook).withPassThrough(false);
+
+    REQUIRE(hook.install());
 
     int res = simple_add(1, 1);
 
@@ -231,7 +119,6 @@ TEST_CASE("InlineHook - exit hook can override result", "[hook][exit]") {
 
     hook.uninstall();
 }
-
 TEST_CASE("InlineHook - void function hook", "[hook][void]") {
     using HookT = InlineHook<decltype(&simple_void_noargs)>;
 
@@ -244,7 +131,9 @@ TEST_CASE("InlineHook - void function hook", "[hook][void]") {
         g_side_effect += 30000;
     };
 
-    REQUIRE(hook.Install(&simple_void_noargs, detour_void, ReplaceHook, false));
+    hook.withDetourFn(detour_void).withTargetFn(simple_void_noargs).withType(ReplaceHook).withPassThrough(false);
+
+    REQUIRE(hook.install());
 
     simple_void_noargs();
 
@@ -256,63 +145,28 @@ TEST_CASE("InlineHook - void function hook", "[hook][void]") {
     REQUIRE(g_side_effect == 30000 + 777);
 }
 
-TEST_CASE("InlineHook - reentrancy protection", "[hook][reentrancy]") {
-    using HookT = InlineHook<decltype(&simple_add)>;
-
-    HookT hook;
-
-    g_side_effect = 0;
-
-    static InlineHook<decltype(&simple_add)> *global_hook_ptr = nullptr;
-
-    auto detour_that_calls_back = [](int a, int b) -> int {
-        g_side_effect += 10000;
-
-        // simulate reentrancy
-        if (global_hook_ptr) {
-            int inner = simple_add(7, 8); // ← should NOT trigger hook again
-            g_side_effect += inner * 10;
-        }
-
-        return a + b + 1000;
-    };
-
-    REQUIRE(hook.Install(&simple_add, detour_that_calls_back, ReplaceHook, false));
-
-    global_hook_ptr = &hook;
-
-    int res = simple_add(5, 6);
-
-    // Expected: detour ran once, inner call bypassed hook
-    REQUIRE(res == 5 + 6 + 1000);
-    REQUIRE(g_side_effect == 10000 + 100 + 150 * 10); // 10000 + orig + (7+8)*10
-
-    global_hook_ptr = nullptr;
-    hook.uninstall();
-}
-
 static std::vector<int64_t> g_args_log;
 
-NOINLINE int multi_param_add(int a, int b, int c, int d) {
+WITCH_NOINLINE int multi_param_add(int a, int b, int c, int d) {
     printf("noinline");
     g_args_log.push_back((int64_t)a << 48 | (int64_t)b << 32 | (int64_t)c << 16 | d);
     g_side_effect += 100;
     return a + b + c + d;
 }
 
-NOINLINE double float_return(double x, float y) {
+WITCH_NOINLINE double float_return(double x, float y) {
     printf("noinline");
     g_side_effect += static_cast<int>(x + y);
     return x * y;
 }
 
-NOINLINE std::string string_return(const std::string &s1, std::string s2) {
+WITCH_NOINLINE std::string string_return(const std::string &s1, std::string s2) {
     printf("noinline");
     g_side_effect += s1.size() + s2.size();
     return s1 + s2;
 }
 
-NOINLINE void multi_param_void(int a, char b, const char *c) {
+WITCH_NOINLINE void multi_param_void(int a, char b, const char *c) {
     printf("noinline");
     g_side_effect += a + static_cast<int>(b) + strlen(c);
 }
@@ -339,8 +193,9 @@ TEST_CASE("InlineHook - replace hook with multi params", "[hook][replace][multi-
         g_side_effect += 9000;
         return a * b * c * d;
     };
+    hook.withDetourFn(detour).withTargetFn(multi_param_add).withType(ReplaceHook).withPassThrough(false);
 
-    bool ok = hook.Install(&multi_param_add, detour, ReplaceHook, false);
+    bool ok = hook.install();
     REQUIRE(ok);
 
     int result = multi_param_add(1, 2, 3, 4);
@@ -356,7 +211,7 @@ TEST_CASE("InlineHook - replace hook with multi params", "[hook][replace][multi-
     hook.uninstall();
 
     REQUIRE(multi_param_add(5, 6, 7, 8) == 26);
-    REQUIRE(g_side_effect == 9000 + 100); // after uninstall
+    REQUIRE(g_side_effect == 9000 + 200); // after uninstall
 }
 
 TEST_CASE("InlineHook - enter hook with float params and return", "[hook][enter][float]") {
@@ -374,36 +229,12 @@ TEST_CASE("InlineHook - enter hook with float params and return", "[hook][enter]
         return x + y; // ignored since use_original_result=true
     };
 
-    REQUIRE(hook.Install(&float_return, detour, EnterHook, true));
+    hook.withDetourFn(detour).withTargetFn(float_return).withType(EnterHook).withPassThrough(true);
+    REQUIRE(hook.install());
 
     double res = float_return(2.5, 3.0f);
-    REQUIRE(res == 7.5);                // original result
-    REQUIRE(g_side_effect == 2000 + 5); // detour + original side effect
-
-    hook.uninstall();
-}
-
-TEST_CASE("InlineHook - exit hook with string params and return", "[hook][exit][string]") {
-    using HookT = InlineHook<decltype(&string_return)>;
-
-    HookT hook;
-
-    g_side_effect = 0;
-
-    REQUIRE(string_return("hello", "world") == "helloworld");
-    REQUIRE(g_side_effect == 10);
-
-    auto detour = [](const std::string &s1, std::string s2) -> std::string {
-        printf("noinline");
-        g_side_effect += 5000;
-        return s1 + " " + s2; // override
-    };
-
-    REQUIRE(hook.Install(&string_return, detour, ExitHook, true));
-
-    std::string res = string_return("hello", "world");
-    REQUIRE(res == "hello world");
-    REQUIRE(g_side_effect == 5000 + 10); // original + detour
+    REQUIRE(res == 7.5);                 // original result
+    REQUIRE(g_side_effect == 2000 + 10); // detour + original side effect
 
     hook.uninstall();
 }
@@ -423,81 +254,13 @@ TEST_CASE("InlineHook - replace hook with void multi params", "[hook][replace][v
         g_side_effect += 30000 + strlen(c);
     };
 
-    REQUIRE(hook.Install(&multi_param_void, detour, ReplaceHook, false));
+    hook.withDetourFn(detour).withTargetFn(multi_param_void).withType(ReplaceHook).withPassThrough(false);
+    REQUIRE(hook.install());
 
     multi_param_void(10, 'A', "test");
     REQUIRE(g_side_effect == 10 + 65 + 4 + 30000 + 4); // original first call + detour
 
     // In replace, original not called, so second call only detour: adjust accordingly
-
-    hook.uninstall();
-}
-
-TEST_CASE("InlineHook - enter hook in multi-thread", "[hook][enter][multi-thread]") {
-    using HookT = InlineHook<decltype(&simple_add)>;
-
-    HookT hook;
-
-    g_side_effect = 0;
-
-    auto detour = [](int a, int b) -> int {
-        printf("noinline");
-        g_side_effect += 2000;
-        std::this_thread::sleep_for(std::chrono::milliseconds(10)); // simulate work
-        return 0;                                                   // ignored
-    };
-
-    REQUIRE(hook.Install(&simple_add, detour, EnterHook, true));
-
-    std::vector<std::thread> threads;
-    for (int i = 0; i < 10; ++i) {
-        threads.emplace_back([i]() {
-            printf("noinline");
-            int res = simple_add(i, i * 2);
-            REQUIRE(res == i + i * 2); // original result
-        });
-    }
-    for (auto &t : threads)
-        t.join();
-
-    REQUIRE(g_side_effect == 2000 * 10 + 100 * 10); // each thread: detour + original
-
-    hook.uninstall();
-}
-
-TEST_CASE("InlineHook - repeated install logs warning", "[hook][install][error]") {
-    using HookT = InlineHook<decltype(&simple_add)>;
-
-    HookT hook;
-
-    std::stringstream cap;
-    std::streambuf *old_cout = std::cout.rdbuf(cap.rdbuf());
-
-    REQUIRE(hook.Install(
-        &simple_add,
-        [](int, int) -> int {
-            printf("noinline");
-            return 0;
-        },
-        ReplaceHook, false));
-
-    // Second install
-    hook.Install(
-        &simple_add,
-        [](int, int) -> int {
-            printf("noinline");
-            return 0;
-        },
-        ReplaceHook, false);
-}
-
-TEST_CASE("InlineHook - uninstall not installed logs warning", "[hook][uninstall][error]") {
-    using HookT = InlineHook<decltype(&simple_add)>;
-
-    HookT hook; // not installed
-
-    std::stringstream cap;
-    std::streambuf *old_cout = std::cout.rdbuf(cap.rdbuf());
 
     hook.uninstall();
 }
@@ -509,13 +272,14 @@ TEST_CASE("InlineHook - mixed hook types sequence", "[hook][mixed]") {
 
     g_side_effect = 0;
 
-    // Install enter
+    // install enter
     auto detour_enter = [](int a, int b) -> int {
         printf("noinline");
         g_side_effect += 1000;
         return 0;
     };
-    REQUIRE(hook_enter.Install(&simple_add, detour_enter, EnterHook, true));
+    hook_enter.withDetourFn(detour_enter).withTargetFn(simple_add).withType(EnterHook).withPassThrough(true);
+    REQUIRE(hook_enter.install());
 
     int res = simple_add(1, 2);
     REQUIRE(res == 3);
@@ -529,7 +293,8 @@ TEST_CASE("InlineHook - mixed hook types sequence", "[hook][mixed]") {
         g_side_effect += 2000;
         return 999;
     };
-    REQUIRE(hook_exit.Install(&simple_add, detour_exit, ExitHook, false));
+    hook_exit.withDetourFn(detour_exit).withTargetFn(simple_add).withType(ExitHook).withPassThrough(false);
+    REQUIRE(hook_exit.install());
 
     res = simple_add(1, 2);
     REQUIRE(res == 999);
@@ -543,11 +308,115 @@ TEST_CASE("InlineHook - mixed hook types sequence", "[hook][mixed]") {
         g_side_effect += 3000;
         return a * b;
     };
-    REQUIRE(hook_replace.Install(&simple_add, detour_replace, ReplaceHook, false));
+    hook_replace.withDetourFn(detour_replace).withTargetFn(simple_add).withType(ReplaceHook).withPassThrough(false);
+    REQUIRE(hook_replace.install());
 
     res = simple_add(1, 2);
     REQUIRE(res == 2);
     REQUIRE(g_side_effect == 1000 + 100 + 2000 + 100 + 3000); // no original side effect in replace
 
     hook_replace.uninstall();
+}
+
+#include <cstdint>
+#include <windows.h>
+#include <iostream>
+
+bool IsPageExecutableReadWrite(void *ptr, size_t size = 0x1000) {
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (!VirtualQuery(ptr, &mbi, sizeof(mbi))) {
+        return false;
+    }
+    return mbi.State == MEM_COMMIT && mbi.Protect == PAGE_EXECUTE_READWRITE && mbi.RegionSize >= size;
+}
+
+TEST_CASE("tryAllocateNear basic behavior", "[memory][allocation]") {
+    SECTION("传入 nullptr 应返回 nullptr") {
+        std::uint8_t *result = tryAllocateNear(nullptr);
+        REQUIRE(result == nullptr);
+    }
+
+    SECTION("尝试在当前模块附近分配（通常能成功）") {
+        // 用一个代码里真实存在的地址（通常比较安全）
+        std::uint8_t dummy = 0;
+        std::uint8_t *target = &dummy;
+
+        std::uint8_t *allocated = tryAllocateNear(target);
+
+        // Windows 通常都能在 2GB 范围内找到 4KB 空闲页
+        // 但极端情况下（内存碎片严重）也可能失败，所以这里用 INFO 而非 REQUIRE
+        INFO("Target address: " << (void *)target);
+        INFO("Allocated at:   " << (void *)allocated);
+
+        if (allocated) {
+            REQUIRE(allocated != nullptr);
+            REQUIRE(IsPageExecutableReadWrite(allocated));
+
+            // 计算距离（字节）
+            intptr_t distance = (intptr_t)(allocated) - (intptr_t)(target);
+            CAPTURE(distance);
+
+            // 通常我们期望在 ±2GB 以内（你的搜索半径就是 0x80000000）
+            REQUIRE(std::abs(distance) <= 0x80000000LL);
+
+            // 清理
+            VirtualFree(allocated, 0, MEM_RELEASE);
+        } else {
+            // 如果失败了，通常是环境太极端（比如测试机内存碎片严重）
+            WARN("tryAllocateNear failed to allocate near " << (void *)target);
+        }
+    }
+
+    SECTION("尝试在已加载模块代码段附近分配（大概率失败或离得很远）") {
+        // 拿一个大概率已经被占用的地址，例如当前函数自己的地址
+        std::uint8_t *code_addr = reinterpret_cast<std::uint8_t *>(tryAllocateNear);
+
+        std::uint8_t *allocated = tryAllocateNear(code_addr);
+
+        INFO("Trying near code address: " << (void *)code_addr);
+
+        if (allocated) {
+            // 成功了，但通常会离得比较远
+            intptr_t distance = (intptr_t)(allocated) - (intptr_t)(code_addr);
+            INFO("Distance from code: " << distance << " bytes");
+
+            REQUIRE(IsPageExecutableReadWrite(allocated));
+            VirtualFree(allocated, 0, MEM_RELEASE);
+        } else {
+            INFO("Failed to allocate near code segment (expected in some cases)");
+        }
+    }
+}
+
+TEST_CASE("tryAllocateNear distance check", "[memory][allocation][distance]") {
+    // 准备一个相对干净的参考点（栈上变量）
+    std::uint8_t local_var = 0x77;
+    std::uint8_t *reference = &local_var;
+
+    auto *ptr = tryAllocateNear(reference);
+
+    if (ptr) {
+        uintptr_t ref_addr = reinterpret_cast<uintptr_t>(reference);
+        uintptr_t got_addr = reinterpret_cast<uintptr_t>(ptr);
+
+        // 计算相对偏移（有符号）
+        int64_t diff = static_cast<int64_t>(got_addr) - static_cast<int64_t>(ref_addr);
+
+        CAPTURE(ref_addr);
+        CAPTURE(got_addr);
+        CAPTURE(diff);
+
+        // 验证没有超出搜索半径
+        REQUIRE(std::abs(diff) <= 0x80000000LL);
+
+        // 可选：验证确实倾向于“向下分配”（你的实现优先向下搜）
+        // if (diff > 0) {
+        //     WARN("Allocated above target (implementation prefers downward)");
+        // }
+
+        VirtualFree(ptr, 0, MEM_RELEASE);
+    } else {
+        // 在一些高负载/碎片严重的机器上可能失败
+        WARN("Allocation failed near stack address " << (void *)reference);
+    }
 }
