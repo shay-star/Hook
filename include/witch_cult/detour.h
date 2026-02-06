@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <array>
 #include <type_traits>
+#include <mutex>
 #ifdef _WIN32
 #    define WIN32_LEAN_AND_MEAN
 #    include <windows.h>
@@ -44,7 +45,7 @@
 #    endif
 #endif
 namespace witch_cult {
-    inline std::uint8_t *TryAllocateNear(std::uint8_t *nearest) {
+    inline std::uint8_t *tryAllocateNear(std::uint8_t *nearest) {
         const size_t alloc_size = 0x1000;
         const intptr_t search_size = 0x80000000;
         uintptr_t addr = reinterpret_cast<uintptr_t>(nearest);
@@ -224,10 +225,10 @@ namespace witch_cult {
     struct HookContext {
         alignas(4) std::uint32_t reentrant{0};
         void *userData{nullptr};
-        std::uint8_t *target_fn{nullptr}; // 原函数地址
-        std::uint8_t *detour_fn{nullptr}; // 用户传入的 hook 回调函数
+        std::uint8_t *targetFn{nullptr}; // 原函数地址
+        std::uint8_t *detourFn{nullptr}; // 用户传入的 hook 回调函数
         std::uint8_t *trampoline{nullptr};
-        HookType hook_type;
+        HookType type;
         bool passThrough{false};
     };
 
@@ -267,13 +268,13 @@ namespace witch_cult {
                 return original_result;
             }
 
-            if (hook_type == EnterHook) {
+            if (type == EnterHook) {
                 new_result = invokeDetour(std::forward<Args>(args)...);
                 original_result = invokeOriginal(std::forward<Args>(args)...);
-            } else if (hook_type == ExitHook) {
+            } else if (type == ExitHook) {
                 original_result = invokeOriginal(std::forward<Args>(args)...);
                 new_result = invokeDetour(std::forward<Args>(args)...);
-            } else if (hook_type == ReplaceHook) {
+            } else if (type == ReplaceHook) {
                 original_result = new_result = invokeDetour(std::forward<Args>(args)...);
             }
 
@@ -298,7 +299,7 @@ namespace witch_cult {
             }
         }
         inline ReturnType invokeDetour(Args... args) {
-            auto fn = reinterpret_cast<FnType>(detour_fn);
+            auto fn = reinterpret_cast<FnType>(detourFn);
             if constexpr (std::is_same_v<R, void>) {
                 fn(std::forward<Args>(args)...);
                 return 0;
@@ -327,7 +328,7 @@ namespace witch_cult {
             // 目标地址           = 0x00007FF612341500
             // 则 disp = 目标 - (当前RIP + 指令长度) = 0x500 - 5 = 0x4FB
             // 你自己提前算好的相对偏移
-            ZyanI64 cur_rip = reinterpret_cast<ZyanI64>(this->target_fn);
+            ZyanI64 cur_rip = reinterpret_cast<ZyanI64>(this->targetFn);
             ZyanI64 jmp_addr = reinterpret_cast<ZyanI64>(this->invocation_prologue);
             ZyanI64 inst_length = 5;
             ZyanI64 disp = jmp_addr - (cur_rip + inst_length);
@@ -339,12 +340,12 @@ namespace witch_cult {
                 LOG_ERROR("Instruction encoding failed: mnemonic=%d statuss=0x%08X", req.mnemonic, result);
                 return false;
             }
-            BuildTrampolineFromPrologue(this->target_fn, length);
-            WriteProtectedMemory((void *)this->target_fn, encoded.data(), length);
+            BuildTrampolineFromPrologue(this->targetFn, length);
+            WriteProtectedMemory((void *)this->targetFn, encoded.data(), length);
 #if defined(_MSC_VER)
             FlushInstructionCache(GetCurrentProcess(), NULL, 0);
 #elif defined(__GNUC__) || defined(__clang__)
-            __builtin___clear_cache(this->target_fn, this->target_fn + length);
+            __builtin___clear_cache(this->targetFn, this->targetFn + length);
 #else
 #endif
             return true;
@@ -417,31 +418,27 @@ namespace witch_cult {
                 LOG_WARN("Hook not installed, skipping uninstall");
                 return false;
             }
-            WriteProtectedMemory((void *)this->target_fn, backup_prologue.data(), prologue_size);
+            WriteProtectedMemory((void *)this->targetFn, backup_prologue.data(), prologue_size);
             hooked = false;
             return true;
         }
-        /**
-         * @brief Set the user data pointer.
-         *
-         * The userData pointer must remain valid for the entire
-         * lifetime of this instance.
-         *
-         * @param userData Pointer to user-owned data.
-         */
-        void SetUserData(void *userData) { this->userData = userData; }
 
-        bool install(FnType targetAddr, FnType hookAddr, HookType hook_type, bool passThrough) {
+        bool install() {
+            if (this->targetFn == nullptr || this->detourFn == nullptr) {
+                LOG_ERROR("Invalid target or hook address provided");
+                return false;
+            }
+            std::lock_guard<std::mutex> lock(hookMutex); // Ensure thread safety
             if (hooked) {
                 LOG_WARN("Hook already installed, skipping");
                 return false;
             }
-            invocation_prologue = TryAllocateNear(reinterpret_cast<std::uint8_t *>(targetAddr));
+            invocation_prologue = tryAllocateNear(reinterpret_cast<std::uint8_t *>(this->targetFn));
+            if (invocation_prologue == nullptr) {
+                LOG_ERROR("Failed to allocate memory for invocation prologue");
+                return false;
+            }
             this->trampoline = invocation_prologue + 200;
-            this->hook_type = hook_type;
-            this->passThrough = passThrough;
-            this->target_fn = reinterpret_cast<std::uint8_t *>(targetAddr);
-            this->detour_fn = reinterpret_cast<std::uint8_t *>(hookAddr);
             BuildJumpToInvocation();
             BuildJumpToInvocationPrologue();
             hooked = true;
@@ -561,10 +558,39 @@ namespace witch_cult {
             return true;
         }
 
+        /**
+         * @brief Set the user data pointer.
+         *
+         * The userData pointer must remain valid for the entire
+         * lifetime of this instance.
+         *
+         * @param userData Pointer to user-owned data.
+         */
+        constexpr auto &&withUserData(this auto &&self, void *userData) noexcept {
+            self.userData = userData;
+            return std::forward<decltype(self)>(self);
+        }
+        constexpr auto &&withPassThrough(this auto &&self, bool passThrough) noexcept {
+            self.passThrough = passThrough;
+            return std::forward<decltype(self)>(self);
+        }
+        constexpr auto &&withType(this auto &&self, HookType type) noexcept {
+            self.type = type;
+            return std::forward<decltype(self)>(self);
+        }
+        constexpr auto &&withTargetFn(this auto &&self, FnType targetFn) noexcept {
+            self.targetFn = reinterpret_cast<std::uint8_t *>(targetFn);
+            return std::forward<decltype(self)>(self);
+        }
+        constexpr auto &&withDetourFn(this auto &&self, FnType detourFn) noexcept {
+            self.detourFn = reinterpret_cast<std::uint8_t *>(detourFn);
+            return std::forward<decltype(self)>(self);
+        }
         bool hooked{false};
         std::array<std::uint8_t, 200> backup_prologue;
         std::size_t prologue_size{0};
         std::uint8_t *invocation_prologue{nullptr};
+        std::mutex hookMutex;
     };
 
     /**
