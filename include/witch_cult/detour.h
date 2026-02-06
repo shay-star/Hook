@@ -242,7 +242,7 @@ namespace witch_cult {
          *
          * @return Pointer to the current instance
          */
-        WITCH_INLINE static auto self() {
+        WITCH_INLINE static auto context() {
 #ifdef _WIN32
             HookInvocation *instance =
                 reinterpret_cast<HookInvocation *>(reinterpret_cast<_NT_TIB *>(NtCurrentTeb())->ArbitraryUserPointer);
@@ -255,7 +255,7 @@ namespace witch_cult {
 #endif
         }
         WITCH_NOINLINE static ReturnType invocationEntry(Args... args) {
-            return self()->dispatch(std::forward<Args>(args)...);
+            return context()->dispatch(std::forward<Args>(args)...);
         }
         inline ReturnType dispatch(Args... args) {
             ReturnType original_result, new_result;
@@ -309,7 +309,7 @@ namespace witch_cult {
     };
     template <typename Fn> struct InlineHook : HookInvocation<Fn> {
         using FnType = typename HookInvocation<Fn>::FnType;
-        using typename HookInvocation<Fn>::self;
+        using typename HookInvocation<Fn>::context;
 
         constexpr InlineHook() {}
 
