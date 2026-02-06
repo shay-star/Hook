@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21.0)
-project(hook VERSION 0.1.0 LANGUAGES C CXX)
+project(detour VERSION 0.1.0 LANGUAGES C CXX)
 
 add_subdirectory(deps/Zydis)
 
@@ -28,7 +28,7 @@ elseif (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     target_compile_options(${PROJECT_NAME} INTERFACE /utf-8)
 endif()
 
-add_library(hook::hook ALIAS ${PROJECT_NAME})
+add_library(witch_cult::detour ALIAS ${PROJECT_NAME})
 
 
 if (PROJECT_IS_TOP_LEVEL)
