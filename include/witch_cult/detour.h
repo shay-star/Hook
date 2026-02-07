@@ -46,121 +46,64 @@
 #endif
 namespace witch_cult {
     inline std::uint8_t *tryAllocateNear(std::uint8_t *nearest) {
-        const size_t alloc_size = 0x1000;
-        const intptr_t search_size = 0x80000000;
-        uintptr_t addr = reinterpret_cast<uintptr_t>(nearest);
-        if (nearest == nullptr) {
+        if (!nearest)
             return nullptr;
-        }
-#ifdef _WIN32
-        const uint64_t radius = 0x80000000ULL;
-        const uintptr_t align = 0x10000;
 
-        if (nearest == nullptr) {
-            return nullptr;
-        }
+        const size_t allocSize = 0x1000;    // 分配一个页 (4KB)
+        const uintptr_t range = 0x7FFFFFFF; // 2GB 限制 (INT_MAX)
+        const uintptr_t align = 0x10000;    // Windows 分配粒度通常为 64KB
 
-        const uintptr_t center = reinterpret_cast<uintptr_t>(nearest);
-        const uintptr_t maxPtr = (uintptr_t)UINTPTR_MAX;
+        uintptr_t base = reinterpret_cast<uintptr_t>(nearest);
 
-        uint64_t lower64 = (center > radius) ? (uint64_t)center - radius : 0;
-        uint64_t upper64 = (uint64_t)center + radius;
-        if (upper64 > (uint64_t)maxPtr)
-            upper64 = maxPtr;
-
-        const uintptr_t lower = static_cast<uintptr_t>(lower64);
-        const uintptr_t upper = static_cast<uintptr_t>(upper64);
-
-        const uintptr_t start = center & ~(align - 1);
+        // 计算搜索边界，注意防止溢出
+        uintptr_t minAddr = (base > range) ? (base - range) : 0x10000;
+        uintptr_t maxAddr = (UINTPTR_MAX - base > range) ? (base + range) : UINTPTR_MAX;
 
         MEMORY_BASIC_INFORMATION mbi;
 
-        auto try_alloc_in_region = [&](uintptr_t regionBase, SIZE_T regionSize) -> std::uint8_t * {
-            if (regionSize < alloc_size)
-                return nullptr;
-            uintptr_t rb = (uintptr_t)regionBase;
-            uintptr_t rs = (uintptr_t)regionSize;
+        // 1. 向上搜索 (从 nearest 到 maxAddr)
+        for (uintptr_t addr = base; addr < maxAddr;) {
+            if (!VirtualQuery(reinterpret_cast<LPCVOID>(addr), &mbi, sizeof(mbi)))
+                break;
 
-            uintptr_t candidate = rb + rs - alloc_size;
-            candidate &= ~(align - 1); // 向下对齐
-            if (candidate < rb)
-                candidate = rb;
-
-            LPVOID buf = VirtualAlloc((LPVOID)candidate, alloc_size, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
-            if (buf)
-                return (std::uint8_t *)buf;
-
-            uintptr_t alt = (rb + (align - 1)) & ~(align - 1);
-            if (alt + alloc_size <= rb + rs) {
-                buf = VirtualAlloc((LPVOID)alt, alloc_size, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
-                if (buf)
-                    return (std::uint8_t *)buf;
-            }
-            return nullptr;
-        };
-
-        if (start >= lower) {
-            uint64_t steps_down = (start - lower) / align;
-            for (uint64_t i = 0; i <= steps_down; ++i) {
-                uintptr_t addr = start - static_cast<uintptr_t>(i * align);
-                if (!VirtualQuery((LPCVOID)addr, &mbi, sizeof(mbi)))
-                    continue;
-                if (mbi.State == MEM_FREE) {
-                    std::uint8_t *r = try_alloc_in_region((uintptr_t)mbi.BaseAddress, mbi.RegionSize);
-                    if (r)
-                        return r;
+            if (mbi.State == MEM_FREE && mbi.RegionSize >= allocSize) {
+                // 在空闲区内寻找一个对齐的起始点
+                uintptr_t candidate = (reinterpret_cast<uintptr_t>(mbi.BaseAddress) + (align - 1)) & ~(align - 1);
+                if (candidate + allocSize <= reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize) {
+                    void *res = VirtualAlloc(reinterpret_cast<void *>(candidate), allocSize, MEM_COMMIT | MEM_RESERVE,
+                                             PAGE_EXECUTE_READWRITE);
+                    if (res)
+                        return static_cast<std::uint8_t *>(res);
                 }
             }
+            addr = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
         }
 
-        if (upper >= start + align) {
-            uint64_t steps_up = (upper - start) / align;
-            for (uint64_t i = 1; i <= steps_up; ++i) {
-                uintptr_t addr = start + static_cast<uintptr_t>(i * align);
-                if (!VirtualQuery((LPCVOID)addr, &mbi, sizeof(mbi)))
-                    continue;
-                if (mbi.State == MEM_FREE) {
-                    std::uint8_t *r = try_alloc_in_region((uintptr_t)mbi.BaseAddress, mbi.RegionSize);
-                    if (r)
-                        return r;
+        // 2. 向下搜索 (从 nearest 到 minAddr)
+        for (uintptr_t addr = base; addr > minAddr;) {
+            if (!VirtualQuery(reinterpret_cast<LPCVOID>(addr), &mbi, sizeof(mbi)))
+                break;
+
+            // 向下搜索时，VirtualQuery 得到的是当前块的基址，我们需要跳到前一个块
+            uintptr_t prevAddr = reinterpret_cast<uintptr_t>(mbi.BaseAddress) - 1;
+
+            if (mbi.State == MEM_FREE && mbi.RegionSize >= allocSize) {
+                // 尽量分配在空闲区的末尾，这样离目标更近
+                uintptr_t candidate =
+                    (reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize - allocSize) & ~(align - 1);
+                if (candidate >= reinterpret_cast<uintptr_t>(mbi.BaseAddress)) {
+                    void *res = VirtualAlloc(reinterpret_cast<void *>(candidate), allocSize, MEM_COMMIT | MEM_RESERVE,
+                                             PAGE_EXECUTE_READWRITE);
+                    if (res)
+                        return static_cast<std::uint8_t *>(res);
                 }
             }
+            if (prevAddr < minAddr)
+                break;
+            addr = prevAddr;
         }
 
         return nullptr;
-#else
-        void *buf{nullptr};
-        const size_t page_size = sysconf(_SC_PAGESIZE);
-        if (page_size == 0 || (page_size & (page_size - 1)) != 0) {
-            LOG_ERROR("Invalid system page size: %zu (must be power of two)", page_size);
-            return nullptr;
-        }
-
-        for (intptr_t offset = 0; offset < search_size; offset += 1) {
-            uintptr_t try_addr = addr - offset;
-            void *ptr = mmap(std::bit_cast<void *>(try_addr), alloc_size, PROT_READ | PROT_WRITE | PROT_EXEC,
-                             MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
-            // 找到
-            if (ptr != MAP_FAILED && std::bit_cast<uintptr_t>(ptr) == try_addr) {
-                buf = ptr;
-                break;
-            }
-            try_addr = addr + offset;
-            ptr = mmap(std::bit_cast<void *>(try_addr), alloc_size, PROT_READ | PROT_WRITE | PROT_EXEC,
-                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
-            if (ptr != MAP_FAILED && std::bit_cast<uintptr_t>(ptr) == try_addr) {
-                buf = ptr;
-                break;
-            }
-        }
-        if (buf == nullptr) {
-            buf = mmap(nullptr, alloc_size, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-        }
-        if (buf == MAP_FAILED) {
-            return nullptr;
-        }
-        return std::bit_cast<std::uint8_t *>(buf);
-#endif
     }
     inline auto WriteProtectedMemory(void *address, const void *data, size_t size) -> bool {
 #if defined(_WIN32)
@@ -319,7 +262,7 @@ namespace witch_cult {
             std::array<ZyanU8, ZYDIS_MAX_INSTRUCTION_LENGTH> encoded;
             ZydisEncoderRequest req{};
             memset(&req, 0, sizeof(req));
-
+            req.branch_width = ZYDIS_BRANCH_WIDTH_32;
             req.mnemonic = ZYDIS_MNEMONIC_JMP;
             req.machine_mode = ZYDIS_MACHINE_MODE_LONG_64;
             req.operand_count = 1;
@@ -337,7 +280,8 @@ namespace witch_cult {
             req.operands[0].imm.s = disp;
 
             if (auto result = ZydisEncoderEncodeInstruction(&req, &encoded[0], &length); ZYAN_FAILED(result)) {
-                LOG_ERROR("Instruction encoding failed: mnemonic=%d statuss=0x%08X", req.mnemonic, result);
+                LOG_ERROR("Instruction encoding failed: mnemonic=%d statuss=0x%08X,jmp_addr %I64x,cur_rip %I64x",
+                          req.mnemonic, result, jmp_addr, cur_rip);
                 return false;
             }
             BuildTrampolineFromPrologue(this->targetFn, length);
@@ -349,6 +293,28 @@ namespace witch_cult {
 #else
 #endif
             return true;
+        }
+        WITCH_INLINE std::array<uint8_t, 14> buildAbsoluteJump(intptr_t dest) {
+            std::array<uint8_t, 14> code{};
+
+            uint32_t low = static_cast<uint32_t>(dest & 0xFFFFFFFF);
+            uint32_t high = static_cast<uint32_t>((uint64_t)dest >> 32);
+
+            // push imm32
+            code[0] = 0x68;
+            *reinterpret_cast<uint32_t *>(&code[1]) = low;
+
+            // mov dword ptr [rsp+4], imm32
+            code[5] = 0xC7;
+            code[6] = 0x44;
+            code[7] = 0x24;
+            code[8] = 0x04;
+            *reinterpret_cast<uint32_t *>(&code[9]) = high;
+
+            // ret
+            code[13] = 0xC3;
+
+            return code;
         }
         auto BuildJumpToInvocation() {
             std::array<ZydisEncoderRequest, 4> req;

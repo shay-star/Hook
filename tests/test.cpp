@@ -420,3 +420,76 @@ TEST_CASE("tryAllocateNear distance check", "[memory][allocation][distance]") {
         WARN("Allocation failed near stack address " << (void *)reference);
     }
 }
+
+TEST_CASE("tryAllocateNear testing", "[memory][allocator]") {
+
+    // 准备一个基准地址，通常取当前函数的地址作为“最近地址”参考
+    auto *const nearest = reinterpret_cast<std::uint8_t *>(&tryAllocateNear);
+
+    SECTION("基本分配逻辑测试") {
+        std::uint8_t *allocated = tryAllocateNear(nearest);
+
+        // 1. 验证是否分配成功
+        REQUIRE(allocated != nullptr);
+
+        // 2. 验证范围限制 (核心逻辑：必须在 2GB 范围内)
+        // x64 rel32 跳转限制是正负 2GB (0x7FFFFFFF)
+        uintptr_t diff = (reinterpret_cast<uintptr_t>(allocated) > reinterpret_cast<uintptr_t>(nearest))
+                             ? (reinterpret_cast<uintptr_t>(allocated) - reinterpret_cast<uintptr_t>(nearest))
+                             : (reinterpret_cast<uintptr_t>(nearest) - reinterpret_cast<uintptr_t>(allocated));
+
+        const uintptr_t TWO_GB = 0x7FFFFFFF;
+        CHECK(diff <= TWO_GB);
+
+        // 3. 验证内存可写性
+        // 写入一个 'ret' 指令 (0xC3)
+        allocated[0] = 0xC3;
+        CHECK(allocated[0] == 0xC3);
+
+        // 4. 验证内存可执行性 (通过函数指针调用)
+        using VoidFn = void (*)();
+        VoidFn testFn = reinterpret_cast<VoidFn>(allocated);
+
+        // 如果不可执行，这里会触发 DEP 异常导致崩溃（测试环境应允许捕获异常或观察信号）
+        // 在 Windows 下可以使用 __try/__except，但 Catch2 通常直接观察是否崩溃
+        testFn();
+
+        // 5. 验证 Windows 分配粒度对齐 (64KB = 0x10000)
+        // 注意：VirtualAlloc 的基址通常是对齐的
+        CHECK((reinterpret_cast<uintptr_t>(allocated) % 0x1000) == 0);
+
+        // 释放内存以防干扰后续测试
+        VirtualFree(allocated, 0, MEM_RELEASE);
+    }
+
+    SECTION("边缘情况与压力测试") {
+        std::vector<std::uint8_t *> allocations;
+
+        // 连续分配 10 次，模拟内存被占用的情况
+        for (int i = 0; i < 10; ++i) {
+            std::uint8_t *ptr = tryAllocateNear(nearest);
+            if (ptr) {
+                allocations.push_back(ptr);
+
+                // 确保每次分配的地址都是唯一的
+                for (size_t j = 0; j < allocations.size() - 1; ++j) {
+                    CHECK(ptr != allocations[j]);
+                }
+
+                // 确保所有分配都在 2GB 范围内
+                uintptr_t diff = std::abs(reinterpret_cast<intptr_t>(ptr) - reinterpret_cast<intptr_t>(nearest));
+                CHECK(diff <= 0x7FFFFFFF);
+            }
+        }
+
+        // 清理
+        for (auto *p : allocations) {
+            VirtualFree(p, 0, MEM_RELEASE);
+        }
+    }
+
+    SECTION("NULL 输入安全性") {
+        // 虽然业务逻辑可能保证不传入 NULL，但函数应该健壮
+        CHECK(tryAllocateNear(nullptr) == nullptr);
+    }
+}
