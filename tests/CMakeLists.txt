@@ -17,7 +17,7 @@ include(Catch)
 add_executable(detour_tests test.cpp)
 target_link_libraries(detour_tests
     PRIVATE
-        witch_cult::detour
+        rezero::detour
         Catch2::Catch2WithMain
 )
 target_compile_features(detour_tests PRIVATE cxx_std_23)

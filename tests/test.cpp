@@ -9,20 +9,20 @@
 #define LOG_INFO(fmt, ...) printf("[*] " fmt, ##__VA_ARGS__)
 #define LOG_WARN(fmt, ...) printf("[!] " fmt, ##__VA_ARGS__)
 #define LOG_ERROR(fmt, ...) printf("[-] " fmt, ##__VA_ARGS__)
-#include <witch_cult/detour.h>
-using namespace witch_cult;
+#include <rezero/detour.h>
+using namespace re;
 
 static size_t g_side_effect = 0;
 static int64_t g_last_arg = 0;
 
-WITCH_NOINLINE int simple_add(int a, int b) {
+RE_NOINLINE int simple_add(int a, int b) {
     printf("noinline");
     g_last_arg = (int64_t)a << 32 | (uint32_t)b;
     g_side_effect += 100;
     return a + b;
 }
 
-WITCH_NOINLINE void simple_void_noargs() {
+RE_NOINLINE void simple_void_noargs() {
     printf("noinline");
     g_side_effect += 777;
 }
@@ -147,26 +147,26 @@ TEST_CASE("InlineHook - void function hook", "[hook][void]") {
 
 static std::vector<int64_t> g_args_log;
 
-WITCH_NOINLINE int multi_param_add(int a, int b, int c, int d) {
+RE_NOINLINE int multi_param_add(int a, int b, int c, int d) {
     printf("noinline");
     g_args_log.push_back((int64_t)a << 48 | (int64_t)b << 32 | (int64_t)c << 16 | d);
     g_side_effect += 100;
     return a + b + c + d;
 }
 
-WITCH_NOINLINE double float_return(double x, float y) {
+RE_NOINLINE double float_return(double x, float y) {
     printf("noinline");
     g_side_effect += static_cast<int>(x + y);
     return x * y;
 }
 
-WITCH_NOINLINE std::string string_return(const std::string &s1, std::string s2) {
+RE_NOINLINE std::string string_return(const std::string &s1, std::string s2) {
     printf("noinline");
     g_side_effect += s1.size() + s2.size();
     return s1 + s2;
 }
 
-WITCH_NOINLINE void multi_param_void(int a, char b, const char *c) {
+RE_NOINLINE void multi_param_void(int a, char b, const char *c) {
     printf("noinline");
     g_side_effect += a + static_cast<int>(b) + strlen(c);
 }

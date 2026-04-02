@@ -26,25 +26,25 @@
 #    pragma warning(disable : 4141)
 #endif
 
-#ifndef WITCH_NOINLINE
+#ifndef RE_NOINLINE
 #    if defined(_MSC_VER)
-#        define WITCH_NOINLINE __declspec(noinline)
+#        define RE_NOINLINE __declspec(noinline)
 #    elif defined(__GNUC__) || defined(__clang__)
-#        define WITCH_NOINLINE __attribute__((noinline))
+#        define RE_NOINLINE __attribute__((noinline))
 #    else
-#        define WITCH_NOINLINE
+#        define RE_NOINLINE
 #    endif
 #endif
-#ifndef WITCH_INLINE
+#ifndef RE_INLINE
 #    if defined(_MSC_VER)
-#        define WITCH_INLINE __forceinline
+#        define RE_INLINE __forceinline
 #    elif defined(__GNUC__) || defined(__clang__)
-#        define WITCH_INLINE inline __attribute__((always_inline))
+#        define RE_INLINE inline __attribute__((always_inline))
 #    else
-#        define WITCH_INLINE inline
+#        define RE_INLINE inline
 #    endif
 #endif
-namespace witch_cult {
+namespace re {
     inline std::uint8_t *tryAllocateNear(std::uint8_t *nearest) {
         if (!nearest)
             return nullptr;
@@ -138,11 +138,11 @@ namespace witch_cult {
 #endif
     }
 
-    WITCH_INLINE inline bool TryEnterReentrantSection(std::uint32_t *reentrant) {
+    RE_INLINE inline bool TryEnterReentrantSection(std::uint32_t *reentrant) {
         return 0 == _InterlockedCompareExchange(reentrant, 1, 0);
     }
 
-    WITCH_INLINE inline void LeaveReentrantSection(std::uint32_t *reentrant) {
+    RE_INLINE inline void LeaveReentrantSection(std::uint32_t *reentrant) {
         auto old_val = _InterlockedExchange(reentrant, 0);
         _Analysis_assume_(old_val == 1);
     }
@@ -150,10 +150,10 @@ namespace witch_cult {
         bool entered;
         std::uint32_t *reentrant;
 
-        WITCH_INLINE ReentrantGuard(std::uint32_t *reentrant)
+        RE_INLINE ReentrantGuard(std::uint32_t *reentrant)
             : reentrant(reentrant), entered(TryEnterReentrantSection(reentrant)) {}
 
-        WITCH_INLINE ~ReentrantGuard() {
+        RE_INLINE ~ReentrantGuard() {
             if (entered)
                 LeaveReentrantSection(reentrant);
         }
@@ -186,7 +186,7 @@ namespace witch_cult {
          *
          * @return Pointer to the current instance
          */
-        WITCH_INLINE static auto context() {
+        RE_INLINE static auto context() {
 #ifdef _WIN32
             HookInvocation *instance =
                 reinterpret_cast<HookInvocation *>(reinterpret_cast<_NT_TIB *>(NtCurrentTeb())->ArbitraryUserPointer);
@@ -198,7 +198,7 @@ namespace witch_cult {
             return instance;
 #endif
         }
-        WITCH_NOINLINE static ReturnType invocationEntry(Args... args) {
+        RE_NOINLINE static ReturnType invocationEntry(Args... args) {
             return context()->dispatch(std::forward<Args>(args)...);
         }
         inline ReturnType dispatch(Args... args) {
@@ -294,7 +294,7 @@ namespace witch_cult {
 #endif
             return true;
         }
-        WITCH_INLINE std::array<uint8_t, 14> buildAbsoluteJump(intptr_t dest) {
+        RE_INLINE std::array<uint8_t, 14> buildAbsoluteJump(intptr_t dest) {
             std::array<uint8_t, 14> code{};
 
             uint32_t low = static_cast<uint32_t>(dest & 0xFFFFFFFF);
@@ -564,7 +564,7 @@ namespace witch_cult {
      * @tparam Fn Target function signature.
      * @return Pointer to an InlineHook instance allocated on the heap.
      */
-    template <typename Fn> [[nodiscard]] WITCH_INLINE inline InlineHook<Fn> *makeInlineHook() {
+    template <typename Fn> [[nodiscard]] RE_INLINE inline InlineHook<Fn> *makeInlineHook() {
         auto *instance = new (std::nothrow) InlineHook<Fn>();
         return instance;
     }
@@ -572,4 +572,4 @@ namespace witch_cult {
 #if defined(_MSC_VER)
 #    pragma warning(pop)
 #endif
-} // namespace witch_cult
+} // namespace re

@@ -24,7 +24,7 @@ elseif (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     target_compile_options(${PROJECT_NAME} PUBLIC /utf-8)
 endif()
 
-add_library(witch_cult::detour ALIAS ${PROJECT_NAME})
+add_library(rezero::detour ALIAS ${PROJECT_NAME})
 
 
 if (PROJECT_IS_TOP_LEVEL)
@@ -50,7 +50,7 @@ install(
 install(
     EXPORT detourTargets
     FILE detourTargets.cmake
-    NAMESPACE witch_cult::
+    NAMESPACE rezero::
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/detour
 )
 
